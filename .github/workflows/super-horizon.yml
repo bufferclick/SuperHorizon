@@ -1,0 +1,73 @@
+name: super-horizon
+
+# Super Horizon's build (README-SUPER-HORIZON.md, at the repository's root).
+#
+# Every push builds the Windows launcher and uploads the exe as an artifact:
+#   Actions -> super-horizon -> <the run> -> Artifacts -> super-horizon-windows-x64
+# Push a tag (v1, v2, v1.1, ...) and the same files are also published as a
+# GitHub release, so anyone with the link can download them without signing in.
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: super-horizon-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: windows x64
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # The C runtime linked in: without it the exe asks for VCRUNTIME140.dll,
+      # which only the Visual C++ redistributable installs.
+      RUSTFLAGS: -C target-feature=+crt-static
+      # Microsoft sign-in (docs/microsoft-account.md): a repository *variable* named
+      # HORIZON_MSA_CLIENT_ID. Unset (the default), the launcher says sign-in is not
+      # configured; offline play still works.
+      HORIZON_MSA_CLIENT_ID: ${{ vars.HORIZON_MSA_CLIENT_ID }}
+      # The mod browser's CurseForge source: a repository *secret* named
+      # HORIZON_CURSEFORGE_API_KEY. Unset, the launcher searches Modrinth only.
+      HORIZON_CURSEFORGE_API_KEY: ${{ secrets.HORIZON_CURSEFORGE_API_KEY }}
+    defaults:
+      run:
+        working-directory: launcher
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+          shared-key: super-horizon-windows-x64
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          rm -rf out && mkdir -p out
+          cp target/release/super-horizon.exe out/super-horizon.exe
+          # The same binary under the setup's name: started with no arguments it opens
+          # the per-user installer instead of the launcher (launcher/src/installer.rs).
+          cp target/release/super-horizon.exe out/super-horizon-setup.exe
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: super-horizon-windows-x64
+          path: launcher/out/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          gh release create "$tag" \
+            --title "Super Horizon $tag" \
+            --notes "Super Horizon $tag — made by Buffer. Windows x64." \
+            out/super-horizon.exe out/super-horizon-setup.exe
